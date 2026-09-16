@@ -1,0 +1,6 @@
+{
+  "name": "M3U8 HTTPS Reverse Proxy & Stream Embed",
+  "description": "High-performance HTTP to HTTPS M3U8/HLS reverse proxy with in-memory deduplication caching and embeddable player.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
