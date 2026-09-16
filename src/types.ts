@@ -1,3 +1,13 @@
+export type SpoofMode = 'localhost' | 'same_origin' | 'vlc' | 'ffmpeg' | 'clean' | 'custom';
+
+export interface SpoofConfig {
+  mode: SpoofMode;
+  customUserAgent?: string;
+  customReferer?: string;
+  customOrigin?: string;
+  customIp?: string;
+}
+
 export interface ProxyStats {
   totalRequests: number;
   manifestRequests: number;
@@ -23,6 +33,7 @@ export interface StreamInspection {
   contentLengthBytes?: number;
   isM3u8?: boolean;
   error?: string;
+  requestHeadersSent?: Record<string, string>;
   info?: {
     isMasterPlaylist: boolean;
     variantsCount: number;
@@ -43,4 +54,6 @@ export interface StreamPreset {
   videoCodec: string;
   audioCodec: string;
   isUserPreset?: boolean;
+  recommendedSpoof?: SpoofMode;
 }
+

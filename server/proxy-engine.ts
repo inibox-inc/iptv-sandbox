@@ -3,6 +3,16 @@ import http from 'http';
 import https from 'https';
 import { URL } from 'url';
 
+export type SpoofMode = 'localhost' | 'same_origin' | 'vlc' | 'ffmpeg' | 'clean' | 'custom';
+
+export interface SpoofOptions {
+  mode: SpoofMode;
+  customUserAgent?: string;
+  customReferer?: string;
+  customOrigin?: string;
+  customIp?: string;
+}
+
 interface CacheEntry {
   contentType: string;
   data: Buffer;
@@ -99,9 +109,80 @@ class HlsProxyEngine {
   }
 
   /**
+   * Build spoofed request headers based on selected mode
+   */
+  private buildUpstreamHeaders(targetUrl: string, spoof: SpoofOptions, reqHeaders: Record<string, string | string[] | undefined>): Record<string, string> {
+    const urlObj = new URL(targetUrl);
+    const headers: Record<string, string> = {
+      'Host': urlObj.host,
+      'Accept': '*/*',
+      'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
+      'Connection': 'keep-alive',
+    };
+
+    if (reqHeaders['range'] && typeof reqHeaders['range'] === 'string') {
+      headers['Range'] = reqHeaders['range'];
+    }
+
+    switch (spoof.mode) {
+      case 'localhost':
+        headers['User-Agent'] = spoof.customUserAgent || 'VLC/3.0.20 LibVLC/3.0.20';
+        headers['Referer'] = spoof.customReferer || `http://localhost:8000/`;
+        headers['Origin'] = spoof.customOrigin || `http://localhost:8000`;
+        headers['X-Forwarded-For'] = spoof.customIp || '127.0.0.1';
+        headers['X-Real-IP'] = spoof.customIp || '127.0.0.1';
+        headers['Client-IP'] = spoof.customIp || '127.0.0.1';
+        headers['X-Forwarded-Proto'] = 'http';
+        break;
+
+      case 'same_origin':
+        headers['User-Agent'] = spoof.customUserAgent || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
+        headers['Referer'] = spoof.customReferer || `${urlObj.protocol}//${urlObj.host}/`;
+        headers['Origin'] = spoof.customOrigin || `${urlObj.protocol}//${urlObj.host}`;
+        headers['X-Forwarded-For'] = spoof.customIp || '127.0.0.1';
+        headers['X-Real-IP'] = spoof.customIp || '127.0.0.1';
+        break;
+
+      case 'vlc':
+        headers['User-Agent'] = 'VLC/3.0.20 LibVLC/3.0.20';
+        headers['Icy-MetaData'] = '1';
+        headers['X-Forwarded-For'] = '127.0.0.1';
+        break;
+
+      case 'ffmpeg':
+        headers['User-Agent'] = 'Lavf/58.76.100';
+        headers['Connection'] = 'close';
+        break;
+
+      case 'clean':
+        headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36';
+        // Strip everything else to simulate a pure direct browser client
+        break;
+
+      case 'custom':
+        if (spoof.customUserAgent) headers['User-Agent'] = spoof.customUserAgent;
+        if (spoof.customReferer) headers['Referer'] = spoof.customReferer;
+        if (spoof.customOrigin) headers['Origin'] = spoof.customOrigin;
+        if (spoof.customIp) {
+          headers['X-Forwarded-For'] = spoof.customIp;
+          headers['X-Real-IP'] = spoof.customIp;
+        }
+        break;
+
+      default:
+        headers['User-Agent'] = 'VLC/3.0.20 LibVLC/3.0.20';
+        headers['Referer'] = `http://127.0.0.1/`;
+        headers['X-Forwarded-For'] = '127.0.0.1';
+        break;
+    }
+
+    return headers;
+  }
+
+  /**
    * Rewrite M3U8 content to point internal relative & absolute URLs to the HTTPS proxy
    */
-  public rewriteM3u8(content: string, targetUrl: string, proxyBaseUrl: string): string {
+  public rewriteM3u8(content: string, targetUrl: string, proxyBaseUrl: string, spoofParamsString: string = ''): string {
     const targetUrlObj = new URL(targetUrl);
     const lines = content.split(/\r?\n/);
     const rewrittenLines: string[] = [];
@@ -109,7 +190,7 @@ class HlsProxyEngine {
     const makeProxyUrl = (rawUrl: string): string => {
       try {
         const resolved = new URL(rawUrl, targetUrlObj.href).href;
-        return `${proxyBaseUrl}?url=${encodeURIComponent(resolved)}`;
+        return `${proxyBaseUrl}?url=${encodeURIComponent(resolved)}${spoofParamsString}`;
       } catch {
         return rawUrl;
       }
@@ -146,26 +227,23 @@ class HlsProxyEngine {
   /**
    * Fetch from upstream HTTP/HTTPS origin with timeout, redirects, and error handling
    */
-  private fetchUpstream(targetUrl: string, reqHeaders: Record<string, string | string[] | undefined>): Promise<{
+  public fetchUpstream(
+    targetUrl: string,
+    spoof: SpoofOptions,
+    reqHeaders: Record<string, string | string[] | undefined> = {}
+  ): Promise<{
     contentType: string;
     data: Buffer;
     status: number;
     headers: Record<string, string>;
+    requestHeadersSent: Record<string, string>;
   }> {
     return new Promise((resolve, reject) => {
       const urlObj = new URL(targetUrl);
       const isHttps = urlObj.protocol === 'https:';
       const client = isHttps ? https : http;
 
-      const headers: Record<string, string> = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 HLSProxy/1.0',
-        'Accept': '*/*',
-        'Connection': 'keep-alive',
-      };
-
-      if (reqHeaders['range'] && typeof reqHeaders['range'] === 'string') {
-        headers['Range'] = reqHeaders['range'];
-      }
+      const headers = this.buildUpstreamHeaders(targetUrl, spoof, reqHeaders);
 
       const req = client.request(
         urlObj,
@@ -179,7 +257,7 @@ class HlsProxyEngine {
           if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
             const redirectUrl = new URL(res.headers.location, targetUrl).href;
             res.resume(); // consume stream to free memory
-            this.fetchUpstream(redirectUrl, reqHeaders).then(resolve).catch(reject);
+            this.fetchUpstream(redirectUrl, spoof, reqHeaders).then(resolve).catch(reject);
             return;
           }
 
@@ -202,6 +280,7 @@ class HlsProxyEngine {
               data: buffer,
               status: res.statusCode || 200,
               headers: responseHeaders,
+              requestHeadersSent: headers,
             });
           });
         }
@@ -240,6 +319,28 @@ class HlsProxyEngine {
       return;
     }
 
+    // Extract Spoof Options from query params
+    const spoofMode = (req.query.spoof as SpoofMode) || 'localhost';
+    const customUserAgent = req.query.ua as string | undefined;
+    const customReferer = req.query.ref as string | undefined;
+    const customOrigin = req.query.origin as string | undefined;
+    const customIp = req.query.ip as string | undefined;
+
+    const spoof: SpoofOptions = {
+      mode: spoofMode,
+      customUserAgent,
+      customReferer,
+      customOrigin,
+      customIp,
+    };
+
+    // Build extra spoof query string to propagate to child URLs
+    let spoofParamsString = `&spoof=${encodeURIComponent(spoofMode)}`;
+    if (customUserAgent) spoofParamsString += `&ua=${encodeURIComponent(customUserAgent)}`;
+    if (customReferer) spoofParamsString += `&ref=${encodeURIComponent(customReferer)}`;
+    if (customOrigin) spoofParamsString += `&origin=${encodeURIComponent(customOrigin)}`;
+    if (customIp) spoofParamsString += `&ip=${encodeURIComponent(customIp)}`;
+
     const isM3u8 = targetUrl.toLowerCase().includes('.m3u8') || targetUrl.toLowerCase().includes('/play/') || targetUrl.toLowerCase().includes('/live/');
     const isSegment = targetUrl.toLowerCase().includes('.ts') || 
                       targetUrl.toLowerCase().includes('.m4s') || 
@@ -259,7 +360,6 @@ class HlsProxyEngine {
     try {
       const parsed = new URL(targetUrl);
       this.stats.activeStreams.add(`${parsed.hostname}${parsed.pathname.substring(0, 20)}`);
-      // Keep activeStreams set bounded
       if (this.stats.activeStreams.size > 200) {
         this.stats.activeStreams.clear();
       }
@@ -271,7 +371,7 @@ class HlsProxyEngine {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', '*');
-    res.setHeader('Access-Control-Expose-Headers', 'Content-Length, Content-Range, Content-Type');
+    res.setHeader('Access-Control-Expose-Headers', 'Content-Length, Content-Range, Content-Type, X-Proxy-Spoof-Mode');
 
     if (req.method === 'OPTIONS') {
       this.stats.activeRequests = Math.max(0, this.stats.activeRequests - 1);
@@ -279,8 +379,11 @@ class HlsProxyEngine {
       return;
     }
 
+    // Cache key includes URL and spoof mode
+    const cacheKey = `${targetUrl}#${spoofMode}#${customUserAgent || ''}`;
+
     // Check Memory Cache
-    const cached = this.cache.get(targetUrl);
+    const cached = this.cache.get(cacheKey);
     const now = Date.now();
 
     if (cached && (now - cached.timestamp < cached.ttlMs)) {
@@ -291,6 +394,7 @@ class HlsProxyEngine {
 
       res.setHeader('Content-Type', cached.contentType);
       res.setHeader('X-Proxy-Cache', 'HIT');
+      res.setHeader('X-Proxy-Spoof-Mode', spoofMode);
       res.setHeader('X-Proxy-Age', `${Math.round((now - cached.timestamp) / 1000)}s`);
       for (const [hk, hv] of Object.entries(cached.headers)) {
         res.setHeader(hk, hv);
@@ -303,20 +407,19 @@ class HlsProxyEngine {
 
     try {
       // In-flight Request Coalescing (Single-Flight Deduplication)
-      let fetchPromise = this.inFlightRequests.get(targetUrl);
+      let fetchPromise = this.inFlightRequests.get(cacheKey);
       if (!fetchPromise) {
-        fetchPromise = this.fetchUpstream(targetUrl, req.headers)
+        fetchPromise = this.fetchUpstream(targetUrl, spoof, req.headers)
           .finally(() => {
-            this.inFlightRequests.delete(targetUrl);
+            this.inFlightRequests.delete(cacheKey);
           });
-        this.inFlightRequests.set(targetUrl, fetchPromise);
+        this.inFlightRequests.set(cacheKey, fetchPromise);
       }
 
       const upstream = await fetchPromise;
 
       this.stats.upstreamBytesFetched += upstream.data.length;
 
-      // Determine content type and caching TTL
       let finalContentType = upstream.contentType;
       let finalData = upstream.data;
 
@@ -331,11 +434,11 @@ class HlsProxyEngine {
         const proxyBaseUrl = `${protocol}://${host}/api/hls/proxy`;
 
         const rawText = upstream.data.toString('utf-8');
-        const rewrittenText = this.rewriteM3u8(rawText, targetUrl, proxyBaseUrl);
+        const rewrittenText = this.rewriteM3u8(rawText, targetUrl, proxyBaseUrl, spoofParamsString);
         finalData = Buffer.from(rewrittenText, 'utf-8');
 
-        // Cache live manifests for 1.8 seconds (short TTL to keep live streams fresh while collapsing multi-user polling bursts)
-        this.cache.set(targetUrl, {
+        // Cache live manifests for 1.8 seconds
+        this.cache.set(cacheKey, {
           contentType: finalContentType,
           data: finalData,
           status: upstream.status,
@@ -353,9 +456,8 @@ class HlsProxyEngine {
           finalContentType = 'video/mp4';
         }
 
-        // Cache segments for 60 seconds (immutable video chunks)
-        // This ensures if 10 or 100 viewers stream simultaneously, each segment is fetched from origin ONLY ONCE!
-        this.cache.set(targetUrl, {
+        // Cache segments for 60 seconds
+        this.cache.set(cacheKey, {
           contentType: finalContentType,
           data: finalData,
           status: upstream.status,
@@ -371,6 +473,7 @@ class HlsProxyEngine {
 
       res.setHeader('Content-Type', finalContentType);
       res.setHeader('X-Proxy-Cache', 'MISS');
+      res.setHeader('X-Proxy-Spoof-Mode', spoofMode);
       for (const [hk, hv] of Object.entries(upstream.headers)) {
         res.setHeader(hk, hv);
       }
@@ -382,6 +485,7 @@ class HlsProxyEngine {
         error: 'Bad Gateway: Failed to fetch upstream HTTP stream',
         details: err.message || 'Unknown network error',
         targetUrl,
+        spoofMode,
       });
     } finally {
       this.stats.activeRequests = Math.max(0, this.stats.activeRequests - 1);
@@ -391,10 +495,10 @@ class HlsProxyEngine {
   /**
    * Diagnostic inspector for testing URLs, checking headers, codecs, and latency
    */
-  public async inspectStream(url: string, proxyBaseUrl: string) {
+  public async inspectStream(url: string, proxyBaseUrl: string, spoof: SpoofOptions) {
     const start = Date.now();
     try {
-      const upstream = await this.fetchUpstream(url, {});
+      const upstream = await this.fetchUpstream(url, spoof, {});
       const latencyMs = Date.now() - start;
       const isM3u8 = upstream.contentType.includes('mpegurl') || upstream.data.toString('utf-8', 0, 7).startsWith('#EXTM3U');
       const text = upstream.data.toString('utf-8');
@@ -431,7 +535,8 @@ class HlsProxyEngine {
           }
         }
 
-        parsedInfo.sampleRewritten = this.rewriteM3u8(text.slice(0, 1500), url, proxyBaseUrl);
+        const spoofParams = `&spoof=${encodeURIComponent(spoof.mode)}`;
+        parsedInfo.sampleRewritten = this.rewriteM3u8(text.slice(0, 1500), url, proxyBaseUrl, spoofParams);
       }
 
       return {
@@ -442,6 +547,7 @@ class HlsProxyEngine {
         contentLengthBytes: upstream.data.length,
         isM3u8,
         info: parsedInfo,
+        requestHeadersSent: upstream.requestHeadersSent,
         rawSnippet: text.slice(0, 1500),
       };
     } catch (err: any) {
@@ -455,3 +561,4 @@ class HlsProxyEngine {
 }
 
 export const proxyEngine = new HlsProxyEngine();
+

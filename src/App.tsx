@@ -5,7 +5,7 @@ import { EmbedGenerator } from './components/EmbedGenerator';
 import { StreamInspector } from './components/StreamInspector';
 import { EmbedView } from './components/EmbedView';
 import { DEFAULT_PRESETS } from './data/presets';
-import { ProxyStats, StreamPreset } from './types';
+import { ProxyStats, SpoofConfig, StreamPreset } from './types';
 import {
   ShieldCheck,
   Zap,
@@ -40,8 +40,18 @@ export default function App() {
   const [isSimulatingLoad, setIsSimulatingLoad] = useState<boolean>(false);
   const [simulatedClients, setSimulatedClients] = useState<number>(10);
   const [simLog, setSimLog] = useState<string[]>([]);
+  
+  // Spoofing configuration state (defaults to localhost)
+  const [spoofConfig, setSpoofConfig] = useState<SpoofConfig>({
+    mode: 'localhost',
+  });
 
-  const proxyStreamUrl = `${window.location.origin}/api/hls/proxy?url=${encodeURIComponent(currentUrl)}`;
+  // Construct dynamic proxy URL including spoofing parameters
+  let proxyStreamUrl = `${window.location.origin}/api/hls/proxy?url=${encodeURIComponent(currentUrl)}&spoof=${encodeURIComponent(spoofConfig.mode)}`;
+  if (spoofConfig.customUserAgent) proxyStreamUrl += `&ua=${encodeURIComponent(spoofConfig.customUserAgent)}`;
+  if (spoofConfig.customReferer) proxyStreamUrl += `&ref=${encodeURIComponent(spoofConfig.customReferer)}`;
+  if (spoofConfig.customOrigin) proxyStreamUrl += `&origin=${encodeURIComponent(spoofConfig.customOrigin)}`;
+  if (spoofConfig.customIp) proxyStreamUrl += `&ip=${encodeURIComponent(spoofConfig.customIp)}`;
 
   // Fetch telemetry stats
   const fetchStats = async () => {
@@ -293,6 +303,8 @@ export default function App() {
                 proxyUrl={proxyStreamUrl}
                 originalUrl={currentUrl}
                 title={streamTitle}
+                spoofConfig={spoofConfig}
+                onSpoofChange={setSpoofConfig}
               />
             )}
 
@@ -301,7 +313,10 @@ export default function App() {
             )}
 
             {activeTab === 'inspector' && (
-              <StreamInspector url={currentUrl} />
+              <StreamInspector
+                url={currentUrl}
+                spoofConfig={spoofConfig}
+              />
             )}
 
             {activeTab === 'stress' && (

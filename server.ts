@@ -36,7 +36,19 @@ async function startServer() {
     const host = req.headers['x-forwarded-host'] || req.headers.host || 'localhost:3000';
     const proxyBaseUrl = `${protocol}://${host}/api/hls/proxy`;
 
-    const result = await proxyEngine.inspectStream(rawUrl, proxyBaseUrl);
+    const spoofMode = (req.query.spoof as any) || 'localhost';
+    const customUserAgent = req.query.ua as string | undefined;
+    const customReferer = req.query.ref as string | undefined;
+    const customOrigin = req.query.origin as string | undefined;
+    const customIp = req.query.ip as string | undefined;
+
+    const result = await proxyEngine.inspectStream(rawUrl, proxyBaseUrl, {
+      mode: spoofMode,
+      customUserAgent,
+      customReferer,
+      customOrigin,
+      customIp,
+    });
     res.json(result);
   });
 
