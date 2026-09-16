@@ -3,9 +3,18 @@ import { StreamPreset } from '../types';
 export const DEFAULT_PRESETS: StreamPreset[] = [
   {
     id: 'user-stream',
-    name: 'Canal Principal (Usuario)',
+    name: 'Canal Principal (/play/a1ku)',
     description: 'Emisión H264 AVC + MPEG Audio layer 1/2 (mpga)',
     url: 'http://37.10.108.162:8000/play/a1ku',
+    videoCodec: 'H264 / AVC (DX11)',
+    audioCodec: 'MPEG Audio layer 1/2 (mpga)',
+    isUserPreset: true,
+  },
+  {
+    id: 'user-playlist',
+    name: 'Canal Playlist (/playlist.m3u8)',
+    description: 'Lista M3U8 directa del servidor de origen',
+    url: 'http://37.10.108.162:8000/playlist.m3u8',
     videoCodec: 'H264 / AVC (DX11)',
     audioCodec: 'MPEG Audio layer 1/2 (mpga)',
     isUserPreset: true,
